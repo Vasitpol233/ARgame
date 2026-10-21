@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Picnic Wolf: Math Dimension</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Mali:wght@400;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- เพิ่ม Library จับความเคลื่อนไหวของมือด้วย AI -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Mali', cursive; /* ใช้ฟอนต์ที่ดูขี้เล่น เหมาะกับเด็ก */
+            background-color: #000; /* เปลี่ยนเป็นสีดำ เพื่อให้กล้องฉายภาพได้โดดเด่น */
+            touch-action: none; /* ป้องกันการซูมบนมือถือ */
+        }
+        /* วิดีโอจากกล้องที่จะซ้อนอยู่หลังสุด */
+        .input_video {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            object-fit: cover;
+            transform: scaleX(-1); /* กลับซ้ายขวาให้เป็นกระจก */
+            z-index: 0;
+        }
+        #game-canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+            pointer-events: none; /* ให้คลิกทะลุ UI ไปโดน Canvas ได้ */
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+        .pointer-events-auto {
+            pointer-events: auto;
+        }
+        .dialogue-box {
+            background: rgba(255, 255, 255, 0.9);
+            border: 4px solid #FF6B6B;
+            border-radius: 20px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+            transition: all 0.3s ease;
+        }
+        .floating-anim {
+            animation: float 3s ease-in-out infinite;
+        }
+        @keyframes float {
+            0% { transform: translateY(0px); }
+            50% { transform: translateY(-10px); }
+            100% { transform: translateY(0px); }
+        }
+        /* ลบ Crosshair เดิม เปลี่ยนเป็นเคอร์เซอร์มือสุดล้ำ */
+        #hand-cursor {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 50px;
+            height: 50px;
+            border: 4px solid #00ff00;
+            border-radius: 50%;
+            z-index: 15;
+            pointer-events: none;
+            transition: transform 0.1s, background-color 0.2s;
+            box-shadow: 0 0 15px rgba(0,255,0,0.8);
+            display: none; /* ซ่อนไว้ก่อนจนกว่าจะเจอมือในกล้อง */
+        }
+        #hand-cursor::after {
+            content: '🤏 จีบนิ้วเพื่อยิง';
+            position: absolute;
+            top: 60px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #00ff00;
+            font-weight: bold;
+            font-size: 16px;
+            white-space: nowrap;
+            text-shadow: 1px 1px 3px black;
+        }
+        .pinching {
+            transform: translate(-50%, -50%) scale(0.6) !important;
+            background-color: rgba(0, 255, 0, 0.4);
+            border-color: #ffffff !important;
+        }
+        /* Particle styles for correct answer */
+        .particle {
+            position: absolute;
+            border-radius: 50%;
+            pointer-events: none;
+            z-index: 20;
+            animation: pop 0.8s ease-out forwards;
+        }
+        @keyframes pop {
+            0% { transform: scale(1); opacity: 1; }
+            100% { transform: scale(3) translate(var(--tx), var(--ty)); opacity: 0; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Video Layer สำหรับ AR Background ของจริง -->
+    <video class="input_video" autoplay playsinline></video>
+
+    <!-- 3D Canvas -->
+    <canvas id="game-canvas"></canvas>
+    
+    <!-- Hand Cursor for aiming -->
+    <div id="hand-cursor"></div>
+
+    <!-- UI Layer -->
+    <div id="ui-layer" class="p-4 md:p-8">
+        
+        <!-- Top Bar: Score, Timer and Question -->
+        <div class="flex justify-between items-start w-full max-w-5xl mx-auto flex-wrap md:flex-nowrap gap-2">
+            <div class="flex flex-col gap-2">
+                <div class="bg-yellow-400 text-yellow-900 px-4 md:px-6 py-2 rounded-full font-bold text-lg shadow-lg border-2 border-yellow-500 whitespace-nowrap">
+                    คะแนน: <span id="score">0</span>
+                </div>
+                <!-- หลอดเวลา 30 วิ -->
+                <div class="bg-purple-600 text-white px-4 py-2 rounded-full font-bold text-lg shadow-lg border-2 border-purple-400 flex items-center justify-center">
+                    ⏱ <span id="time" class="ml-1">30</span>s
+                </div>
+            </div>
+            
+            <div class="bg-blue-600 text-white px-6 md:px-8 py-3 md:py-4 rounded-3xl font-bold text-2xl md:text-5xl shadow-xl border-4 border-blue-400 text-center floating-anim w-full md:w-auto order-last md:order-none mt-2 md:mt-0">
+                <div id="question-text">1 + 1 = ?</div>
+            </div>
+            
+            <div class="bg-red-500 text-white px-4 md:px-6 py-2 rounded-full font-bold text-lg shadow-lg border-2 border-red-600 whitespace-nowrap h-fit">
+                HP: <span id="hp">3</span>
+            </div>
+        </div>
+
+        <!-- Bottom Bar: Wolf Dialogue -->
+        <div class="w-full flex justify-center mb-4 md:mb-8 pointer-events-auto">
+            <div class="dialogue-box max-w-lg w-full flex items-center p-4 relative cursor-pointer" id="dialogue-container" onclick="startGame()">
+                <div class="w-16 h-16 bg-gray-800 rounded-full flex-shrink-0 flex items-center justify-center text-3xl border-4 border-white shadow-inner overflow-hidden relative">
+                    🐺
+                    <div class="absolute inset-0 bg-yellow-500 opacity-20 mix-blend-overlay"></div> <!-- ให้ดูใส่แว่น/หมวก -->
+                </div>
+                <div class="ml-4 flex-grow">
+                    <h3 class="text-red-600 font-bold text-lg leading-none mb-1">หมาป่า ปิ๊กนิก</h3>
+                    <p id="dialogue-text" class="text-gray-800 text-lg md:text-xl font-semibold">
+                        แตะที่นี่! เราจะเปิดกล้องแล้วใช้ "มือจริงๆ" เล็งและจีบนิ้วเพื่อยิงตอบคำถาม!
+                    </p>
+                </div>
+                <!-- Tap indicator -->
+                <div class="absolute -top-3 -right-3 bg-green-500 text-white text-xs font-bold px-2 py-1 rounded-full animate-bounce">
+                    Click!
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- GameOver Screen -->
+    <div id="game-over" class="hidden absolute inset-0 bg-black bg-opacity-80 z-50 flex-col items-center justify-center pointer-events-auto text-white">
+        <h1 class="text-6xl font-bold text-red-500 mb-4 drop-shadow-[0_0_10px_rgba(255,0,0,0.8)]">GAME OVER</h1>
+        <p class="text-2xl mb-8">ไวรัสเขมือบตัวเลข ชนะไปแล้ว...</p>
+        <p class="text-3xl font-bold text-yellow-400 mb-8">คะแนนรวม: <span id="final-score">0</span></p>
+        <button onclick="resetGame()" class="bg-green-500 hover:bg-green-400 text-white font-bold py-4 px-10 rounded-full text-2xl shadow-[0_5px_0_#166534] active:shadow-[0_0px_0_#166534] active:translate-y-[5px] transition-all">
+            เล่นอีกครั้ง!
+        </button>
+    </div>
+
+    <script>
+        // --- 1. Game State ---
+        let score = 0;
+        let hp = 3;
+        let isPlaying = false;
+        let correctAnswer = 0;
+        let currentTargets = [];
+        let currentItems = []; // เพิ่มตัวแปรเก็บไอเทม
+        let cameraStarted = false; 
+        let timeLeft = 30; // เวลาแต่ละข้อ
+        let timerInterval = null; // ตัวจับเวลา
+        
+        // --- 2. Three.js Setup ---
+        const canvas = document.getElementById('game-canvas');
+        const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+        const scene = new THREE.Scene();
+        // เอาฉากหลังและหมอกสีฟ้าออก เพื่อให้มองเห็นทะลุไปถึงกล้องวิดีโอ (AR ของจริง)
+        scene.background = null; 
+        // scene.fog = new THREE.Fog(0x87CEEB, 10, 50);
+
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(0, 1.5, 5); // ระดับสายตาเด็ก
+
+        // --- 3. Lighting ---
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(10, 20, 10);
+        scene.add(dirLight);
+
+        // --- 4. Environment (The Math Dimension) ---
+        // สร้างตารางพื้น (Grid) ให้ดูเป็นไซไฟนิดๆ
+        const gridHelper = new THREE.GridHelper(100, 100, 0x00ffff, 0x00aaaa);
+        gridHelper.position.y = -1;
+        scene.add(gridHelper);
+
+        // --- 5. Picnic The Wolf Character (Voxel Style) ---
+        const wolfGroup = new THREE.Group();
+        
+        // Head
+        const headGeo = new THREE.BoxGeometry(1, 1, 1);
+        const headMat = new THREE.MeshLambertMaterial({ color: 0x555555 });
+        const head = new THREE.Mesh(headGeo, headMat);
+        wolfGroup.add(head);
+
+        // Snout
+        const snoutGeo = new THREE.BoxGeometry(0.5, 0.4, 0.6);
+        const snoutMat = new THREE.MeshLambertMaterial({ color: 0xdddddd });
+        const snout = new THREE.Mesh(snoutGeo, snoutMat);
+        snout.position.set(0, -0.2, 0.8);
+        wolfGroup.add(snout);
+
+        // Nose
+        const noseGeo = new THREE.BoxGeometry(0.2, 0.1, 0.1);
+        const noseMat = new THREE.MeshLambertMaterial({ color: 0x000000 });
+        const nose = new THREE.Mesh(noseGeo, noseMat);
+        nose.position.set(0, 0.1, 0.35);
+        snout.add(nose);
+
+        // Ears
+        const earGeo = new THREE.ConeGeometry(0.3, 0.6, 4);
+        const earMat = new THREE.MeshLambertMaterial({ color: 0x555555 });
+        const leftEar = new THREE.Mesh(earGeo, earMat);
+        leftEar.position.set(-0.4, 0.8, -0.2);
+        leftEar.rotation.z = 0.2;
+        const rightEar = new THREE.Mesh(earGeo, earMat);
+        rightEar.position.set(0.4, 0.8, -0.2);
+        rightEar.rotation.z = -0.2;
+        wolfGroup.add(leftEar, rightEar);
+
+        // Wacky Item (Emperor's hat / จิ๋นซีฮ่องเต้)
+        const hatGeo = new THREE.BoxGeometry(1.2, 0.2, 1.2);
+        const hatMat = new THREE.MeshLambertMaterial({ color: 0xffcc00 }); // สีทอง
+        const hat = new THREE.Mesh(hatGeo, hatMat);
+        hat.position.set(0, 0.6, 0);
+        
+        const hatTopGeo = new THREE.BoxGeometry(0.6, 0.5, 0.6);
+        const hatTopMat = new THREE.MeshLambertMaterial({ color: 0xcc0000 }); // สีแดง
+        const hatTop = new THREE.Mesh(hatTopGeo, hatTopMat);
+        hatTop.position.set(0, 0.35, 0);
+        hat.add(hatTop);
+        wolfGroup.add(hat);
+
+        wolfGroup.position.set(-4, -0.5, -6); // ย้ายลงมาด้านล่างซ้าย จะได้ไม่บังคำตอบ
+        scene.add(wolfGroup);
+
+        // --- 6. Math Targets Generator ---
+        const targetGroup = new THREE.Group();
+        scene.add(targetGroup);
+
+        const itemGroup = new THREE.Group(); // สร้าง Group สำหรับไอเทม
+        scene.add(itemGroup);
+
+        // Function to create text texture for 3D objects
+        function createTextTexture(text) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 256;
+            canvas.height = 256;
+            const context = canvas.getContext('2d');
+            
+            // Background (เปลี่ยนพื้นหลังเป็นสี่เหลี่ยมเต็มๆ ให้เข้ากับลูกบาศก์)
+            context.fillStyle = '#ffffff';
+            context.fillRect(0, 0, 256, 256);
+            
+            // ทำขอบสีให้ดูเหมือนกล่องไอเทมปริศนา
+            context.lineWidth = 20;
+            context.strokeStyle = '#FFC107'; 
+            context.strokeRect(10, 10, 236, 236);
+
+            // Text (ขยายฟอนต์ให้ใหญ่และเปลี่ยนเป็นสีแดงให้อ่านง่ายสุดๆ)
+            context.font = 'Bold 130px Arial';
+            context.fillStyle = '#ff0000';
+            context.textAlign = 'center';
+            context.textBaseline = 'middle';
+            context.fillText(text, 128, 138); 
+
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.minFilter = THREE.LinearFilter; // ช่วยให้ขอบตัวหนังสือคมชัดขึ้น
+            return texture;
+        }
+
+        // Function to spawn targets
+        function spawnTargets(correctNum, wrongNum1, wrongNum2) {
+            // ล้างของเก่า
+            while(targetGroup.children.length > 0){ 
+                const child = targetGroup.children[0];
+                child.geometry.dispose();
+                child.material.dispose();
+                targetGroup.remove(child); 
+            }
+            currentTargets = [];
+
+            const numbers = [
+                { val: correctNum, isCorrect: true },
+                { val: wrongNum1, isCorrect: false },
+                { val: wrongNum2, isCorrect: false }
+            ];
+            // สุ่มตำแหน่งคำตอบ
+            numbers.sort(() => Math.random() - 0.5);
+
+            const positions = [
+                new THREE.Vector3(-3, 1.5, -8),
+                new THREE.Vector3(0, 2.5, -10),
+                new THREE.Vector3(3, 1.5, -8)
+            ];
+
+            // เปลี่ยนจาก Cylinder แบนๆ เป็น Box (ลูกบาศก์ 3 มิติ) ขนาด 2x2x2
+            const geometry = new THREE.BoxGeometry(2, 2, 2);
+
+            for (let i = 0; i < 3; i++) {
+                const texture = createTextTexture(numbers[i].val.toString());
+                const material = new THREE.MeshLambertMaterial({ 
+                    map: texture,
+                    color: 0xffffff,
+                    emissive: 0x222222 // เพิ่มแสงเรืองรองนิดๆ ให้อ่านง่ายเวลาฉากมืด
+                });
+                const target = new THREE.Mesh(geometry, material);
+                target.position.copy(positions[i]);
+                target.userData = { 
+                    isCorrect: numbers[i].isCorrect, 
+                    value: numbers[i].val,
+                    baseX: positions[i].x, // เก็บตำแหน่งเริ่มต้นแกน X
+                    baseY: positions[i].y  // เก็บตำแหน่งเริ่มต้นแกน Y
+                };
+                
+                targetGroup.add(target);
+                currentTargets.push(target);
+            }
+        }
+
+        // ฟังก์ชันสร้าง Texture สำหรับไอเทม
+        function createItemTexture(iconText, bgColor, textColor) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 256;
+            canvas.height = 256;
+            const context = canvas.getContext('2d');
+            
+            context.fillStyle = bgColor;
+            context.fillRect(0, 0, 256, 256);
+            
+            context.lineWidth = 15;
+            context.strokeStyle = '#ffffff'; 
+            context.strokeRect(10, 10, 236, 236);
+
+            context.font = 'Bold 100px Arial';
+            context.fillStyle = textColor;
+            context.textAlign = 'center';
+            context.textBaseline = 'middle';
+            context.fillText(iconText, 128, 138); 
+
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.minFilter = THREE.LinearFilter;
+            return texture;
+        }
+
+        // ฟังก์ชันสุ่มเกิดไอเทมช่วยเหลือ
+        function spawnItem() {
+            // ล้างไอเทมเก่า
+            while(itemGroup.children.length > 0){ 
+                const child = itemGroup.children[0];
+                child.geometry.dispose();
+                child.material.dispose();
+                itemGroup.remove(child); 
+            }
+            currentItems = [];
+
+            // โอกาส 40% ที่จะมีไอเทมโผล่มาในแต่ละข้อ
+            if (Math.random() > 0.4) return;
+
+            const isHpItem = Math.random() > 0.5; // สุ่มว่าเป็น HP หรือ เวลา
+            // ใช้รูปทรง 8 เหลี่ยม (Octahedron) ให้ดูเหมือนคริสตัลไอเทม
+            const geometry = new THREE.OctahedronGeometry(1.2); 
+            
+            let texture, emissiveColor;
+            if (isHpItem) {
+                texture = createItemTexture('❤', '#ff4d4d', '#ffffff');
+                emissiveColor = 0x550000;
+            } else {
+                texture = createItemTexture('⏱+10', '#4299e1', '#ffffff');
+                emissiveColor = 0x002255;
+            }
+
+            const material = new THREE.MeshLambertMaterial({ 
+                map: texture,
+                color: 0xffffff,
+                emissive: emissiveColor
+            });
+
+            const itemMesh = new THREE.Mesh(geometry, material);
+            
+            // สุ่มตำแหน่งให้อยู่ขอบๆ ด้านบน ซ้ายหรือขวาจะได้ไม่ทับเป้าหมาย
+            const isLeft = Math.random() > 0.5;
+            const px = isLeft ? -5 - Math.random() * 2 : 5 + Math.random() * 2;
+            const py = 3 + Math.random() * 2;
+            itemMesh.position.set(px, py, -8);
+            
+            itemMesh.userData = {
+                type: isHpItem ? 'hp' : 'time',
+                baseX: px,
+                baseY: py
+            };
+
+            itemGroup.add(itemMesh);
+            currentItems.push(itemMesh);
+        }
+
+        // --- 7. Game Logic & Math Generator ---
+        const dialogues = {
+            start: ["ยกมือขวาขึ้นมาหน้ากล้อง! เล็งเป้าแล้ว 'จีบนิ้วชี้กับนิ้วโป้ง' เพื่อยิงเลย!", "ไวรัสบุกแล้ว! ใช้มือของเธอเล็งไปที่คำตอบที่ถูก แล้วจีบนิ้ว!"],
+            correct: ["แม่นเหมือนจับวาง! ยิงต่อไปเรื่อยๆ!", "พลังมือสุดยอด! เอาข้อนี้ไปกิน!", "โอเค ยอมรับว่าเก่ง... ระวังนิ้วล็อคล่ะ!"],
+            wrong: ["ฮ่าๆๆๆ นิ้วล็อคหรอ? เล็งให้แม่นๆ หน่อย!", "จีบนิ้วพลาดไปโดนอะไรเนี่ย! ผิดเต็มๆ!", "โดนไวรัสกัดกินสมองไปแล้วหรอ?"]
+        };
+
+        function setDialogue(type) {
+            const texts = dialogues[type];
+            const text = texts[Math.floor(Math.random() * texts.length)];
+            document.getElementById('dialogue-text').innerText = text;
+            
+            // ทำให้หมาป่ากระโดด
+            wolfGroup.position.y = 0.5;
+            setTimeout(() => { wolfGroup.position.y = -0.5; }, 200);
+        }
+
+        function startTimer() {
+            clearInterval(timerInterval);
+            timeLeft = 30;
+            document.getElementById('time').innerText = timeLeft;
+            
+            timerInterval = setInterval(() => {
+                if (!isPlaying) return;
+                timeLeft--;
+                document.getElementById('time').innerText = timeLeft;
+                
+                if (timeLeft <= 0) {
+                    // หมดเวลา! โดนโจมตีฟรี 1 ที
+                    hp -= 1;
+                    createWrongEffect();
+                    setDialogue('wrong');
+                    document.getElementById('dialogue-text').innerText = "หมดเวลา! ไวรัสโจมตีเข้าแล้ว!";
+                    updateUI();
+                    
+                    if (hp <= 0) {
+                        gameOver();
+                    } else {
+                        generateQuestion(); // ข้ามไปข้อใหม่
+                    }
+                }
+            }, 1000);
+        }
+
+        function generateQuestion() {
+            // ป.1-3 Level (บวก ลบ ง่ายๆ)
+            const isAddition = Math.random() > 0.5;
+            let num1, num2;
+
+            if (isAddition) {
+                num1 = Math.floor(Math.random() * 20) + 1;
+                num2 = Math.floor(Math.random() * 20) + 1;
+                correctAnswer = num1 + num2;
+                document.getElementById('question-text').innerText = `${num1} + ${num2} = ?`;
+            } else {
+                num1 = Math.floor(Math.random() * 20) + 10; // ให้ตัวตั้งมากกว่าเสมอ
+                num2 = Math.floor(Math.random() * num1) + 1;
+                correctAnswer = num1 - num2;
+                document.getElementById('question-text').innerText = `${num1} - ${num2} = ?`;
+            }
+
+            // สร้างคำตอบผิดที่ใกล้เคียง
+            let wrong1 = correctAnswer + Math.floor(Math.random() * 5) + 1;
+            let wrong2 = correctAnswer - Math.floor(Math.random() * 4) - 1;
+            if(wrong2 <= 0) wrong2 = correctAnswer + 10;
+
+            spawnTargets(correctAnswer, wrong1, wrong2);
+            spawnItem(); // สุ่มดรอปไอเทม
+            startTimer(); // เริ่มนับเวลาใหม่
+        }
+
+        function startGame() {
+            if (isPlaying) return;
+            
+            // ตรวจสอบและโหลดระบบกล้อง AR (ทำครั้งเดียวตอนเริ่มเกม)
+            if (!cameraStarted) {
+                document.getElementById('dialogue-text').innerText = "กำลังโหลดระบบ AI จับมือ... กรุณากด 'อนุญาต' (Allow) ใช้งานกล้องนะครับ!";
+                startARCamera();
+                cameraStarted = true;
+            } else {
+                resumeGamePlay();
+            }
+        }
+
+        function resumeGamePlay() {
+            isPlaying = true;
+            score = 0;
+            hp = 3;
+            updateUI();
+            setDialogue('start');
+            generateQuestion();
+            document.getElementById('game-over').classList.add('hidden');
+            document.getElementById('dialogue-container').classList.remove('cursor-pointer');
+            
+            // ซ่อนปุ่ม Click
+            const clickHint = document.querySelector('#dialogue-container .absolute');
+            if(clickHint) clickHint.style.display = 'none';
+        }
+
+        function resetGame() {
+            isPlaying = false;
+            resumeGamePlay();
+        }
+
+        function updateUI() {
+            document.getElementById('score').innerText = score;
+            document.getElementById('hp').innerText = hp;
+        }
+
+        function gameOver() {
+            isPlaying = false;
+            clearInterval(timerInterval); // หยุดเวลา
+            document.getElementById('game-over').classList.remove('hidden');
+            document.getElementById('game-over').style.display = 'flex';
+            document.getElementById('final-score').innerText = score;
+            while(targetGroup.children.length > 0){ 
+                targetGroup.remove(targetGroup.children[0]); 
+            }
+            while(itemGroup.children.length > 0){ 
+                itemGroup.remove(itemGroup.children[0]); 
+            }
+        }
+
+        // --- 8. Interaction (Shooting via Raycaster) ---
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
+        function createHitEffect(x, y) {
+            // สร้าง Effect พลุแตกแบบ 2D UI สำหรับ feedback ทันที
+            for(let i=0; i<8; i++){
+                const particle = document.createElement('div');
+                particle.className = 'particle bg-yellow-400';
+                particle.style.width = '15px';
+                particle.style.height = '15px';
+                particle.style.left = x + 'px';
+                particle.style.top = y + 'px';
+                
+                const angle = (Math.PI * 2 / 8) * i;
+                const distance = 100 + Math.random() * 50;
+                particle.style.setProperty('--tx', Math.cos(angle) * distance + 'px');
+                particle.style.setProperty('--ty', Math.sin(angle) * distance + 'px');
+                
+                document.body.appendChild(particle);
+                setTimeout(() => particle.remove(), 800);
+            }
+        }
+
+        function createWrongEffect() {
+            document.body.style.backgroundColor = 'rgba(255,0,0,0.3)';
+            setTimeout(() => document.body.style.backgroundColor = 'transparent', 200);
+        }
+
+        // --- 9. AR Hand Tracking & 3D Interaction ---
+        
+        // ตัวแปรสำหรับ AI จับมือ
+        const videoElement = document.querySelector('.input_video');
+        const handCursor = document.getElementById('hand-cursor');
+        let isPinching = false;
+        let arCameraInstance = null;
+
+        // ฟังก์ชันเปิดกล้องและรัน MediaPipe
+        function startARCamera() {
+            const hands = new Hands({locateFile: (file) => {
+                return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+            }});
+            
+            hands.setOptions({
+                maxNumHands: 1, // จับแค่มือเดียวเพื่อไม่ให้กวนกัน
+                modelComplexity: 1,
+                minDetectionConfidence: 0.65,
+                minTrackingConfidence: 0.65
+            });
+            
+            hands.onResults(onHandResults);
+
+            arCameraInstance = new Camera(videoElement, {
+                onFrame: async () => {
+                    await hands.send({image: videoElement});
+                },
+                width: 640,
+                height: 480
+            });
+            
+            arCameraInstance.start().then(() => {
+                // เมื่อกล้องและ AI พร้อมทำงาน ค่อยเริ่มเกม
+                resumeGamePlay();
+            }).catch(err => {
+                alert("เกิดข้อผิดพลาด ไม่สามารถเปิดกล้องได้ (โปรดตรวจสอบสิทธิ์การเข้าถึงกล้อง)");
+                resumeGamePlay(); // เปิด fallback ให้ใช้นิ้วจิ้มจอแทนได้
+            });
+        }
+
+        // ฟังก์ชันประมวลผลข้อมูลโครงสร้างมือ
+        function onHandResults(results) {
+            if (!isPlaying) {
+                handCursor.style.display = 'none';
+                return;
+            }
+            
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                handCursor.style.display = 'block';
+                const landmarks = results.multiHandLandmarks[0];
+                
+                // ใช้ปลายนิ้วชี้ (Landmark 8) และปลายนิ้วโป้ง (Landmark 4)
+                const indexFinger = landmarks[8];
+                const thumb = landmarks[4];
+                
+                // แปลงพิกัด MediaPipe ให้อยู่ในหน้าจอ (1-x เพราะวิดีโอกล้องหน้าถูกกลับซ้ายขวา)
+                const screenX = (1 - indexFinger.x) * window.innerWidth;
+                const screenY = indexFinger.y * window.innerHeight;
+                
+                // ขยับเป้าเล็งตามนิ้วชี้
+                handCursor.style.left = screenX + 'px';
+                handCursor.style.top = screenY + 'px';
+
+                // วัดระยะห่างระหว่างนิ้วชี้กับนิ้วโป้ง เพื่อเช็คว่า "จีบนิ้ว" หรือยัง
+                const dx = indexFinger.x - thumb.x;
+                const dy = indexFinger.y - thumb.y;
+                const distance = Math.sqrt(dx*dx + dy*dy);
+                
+                if (distance < 0.06) { // ถ้าระยะใกล้กัน = จีบนิ้ว (Pinch)
+                    if (!isPinching) {
+                        isPinching = true;
+                        handCursor.classList.add('pinching');
+                        processShot(screenX, screenY); // ยิงทันที!
+                    }
+                } else {
+                    isPinching = false;
+                    handCursor.classList.remove('pinching');
+                }
+            } else {
+                handCursor.style.display = 'none';
+                isPinching = false;
+            }
+        }
+
+        // ฟังก์ชันยิงปืน (ใช้ได้ทั้งจากมือในกล้องและเมาส์/สัมผัส)
+        function processShot(clientX, clientY) {
+            if (!isPlaying) return;
+
+            // แปลงพิกัด 2D เป็นพิกัด 3D
+            mouse.x = (clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+
+            // 1. เช็คว่ายิงโดนไอเทมช่วยเหลือหรือไม่ก่อน
+            const itemIntersects = raycaster.intersectObjects(currentItems);
+            if (itemIntersects.length > 0) {
+                const hitItem = itemIntersects[0].object;
+                createHitEffect(clientX, clientY);
+                
+                if (hitItem.userData.type === 'hp') {
+                    hp += 1;
+                    document.getElementById('dialogue-text').innerText = "เยี่ยมมาก! ได้ขวดเลือดเพิ่ม HP ❤";
+                } else if (hitItem.userData.type === 'time') {
+                    timeLeft += 10;
+                    document.getElementById('time').innerText = timeLeft;
+                    document.getElementById('dialogue-text').innerText = "ว้าว! ได้นาฬิกา เพิ่มเวลา 10 วินาที! ⏱";
+                }
+                
+                updateUI();
+                
+                // ลบไอเทมที่ถูกยิงทิ้ง
+                itemGroup.remove(hitItem);
+                currentItems = currentItems.filter(i => i !== hitItem);
+                return; // จบการทำงานในนัดนี้ ไม่ต้องเช็คเป้าหมายต่อ
+            }
+
+            // 2. เช็คการชนกับเป้าหมายคำตอบ 3 มิติ
+            const intersects = raycaster.intersectObjects(currentTargets);
+
+            if (intersects.length > 0) {
+                const hitObject = intersects[0].object;
+                
+                // ถ้ายิงโดนเป้า
+                hitObject.scale.set(1.2, 1.2, 1.2); 
+                
+                if (hitObject.userData.isCorrect) {
+                    createHitEffect(clientX, clientY);
+                    score += 10;
+                    setDialogue('correct');
+                    updateUI();
+                    
+                    setTimeout(() => { generateQuestion(); }, 500);
+
+                } else {
+                    createWrongEffect();
+                    hp -= 1;
+                    setDialogue('wrong');
+                    updateUI();
+                    hitObject.material.color.setHex(0xff0000); 
+                    
+                    if (hp <= 0) setTimeout(gameOver, 500);
+                }
+            }
+        }
+
+        // เก็บ Event เดิมไว้เป็น Fallback (จิ้มหน้าจอก็ยังยิงได้)
+        function onInputTrigger(event) {
+            if (isPinching) return; // ถ้าจับมืออยู่ ไม่ต้องใช้เมาส์
+            
+            let clientX, clientY;
+            if (event.type === 'touchstart') {
+                clientX = event.touches[0].clientX;
+                clientY = event.touches[0].clientY;
+            } else {
+                clientX = event.clientX;
+                clientY = event.clientY;
+            }
+            processShot(clientX, clientY);
+        }
+
+        window.addEventListener('mousedown', onInputTrigger);
+        window.addEventListener('touchstart', onInputTrigger, { passive: false });
+
+        // --- 10. Animation Loop ---
+        const clock = new THREE.Clock();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const time = clock.getElapsedTime();
+
+            // Animate หมาป่าปิ๊กนิก ลอยไปมาและหมุน
+            if (wolfGroup) {
+                wolfGroup.position.y = -0.5 + Math.sin(time * 2) * 0.2; // ปรับแกน y ให้ต่ำลงตามตำแหน่งใหม่
+                wolfGroup.rotation.y = Math.sin(time) * 0.3 + (Math.PI / 4); // หันมาหากล้องเฉียงๆ
+            }
+
+            // Animate เป้าหมาย (กิมมิก: ตัวเลือกบินส่ายไปมาเพื่อหลบการจีบนิ้ว!)
+            currentTargets.forEach((target, index) => {
+                // ให้แต่ละเป้าหมายมีความเร็วในการขยับไม่เท่ากัน (ไวรัสทำให้มันป่วน)
+                const speed = 1.5 + (index * 0.4); 
+                const rangeX = 1.5; // ระยะบินซ้ายขวา
+                const rangeY = 1.0; // ระยะบินขึ้นลง
+                
+                // ใช้สมการ Sine/Cosine สร้างการบินแบบโฉบไปโฉบมา
+                target.position.x = target.userData.baseX + Math.sin(time * speed) * rangeX;
+                target.position.y = target.userData.baseY + Math.cos(time * speed * 1.2) * rangeY;
+                
+                // เปลี่ยนให้กล่องลูกบาศก์หมุนกลิ้งตีลังกา จะได้เห็นตัวเลขจากทุกด้าน ไม่แบนอีกต่อไป!
+                target.rotation.x += 0.015 * speed; 
+                target.rotation.y += 0.02 * speed; 
+            });
+
+            // Animate ไอเทม (ถ้ามี) ให้หมุนและลอย
+            currentItems.forEach((item) => {
+                item.rotation.x += 0.03;
+                item.rotation.y += 0.05;
+                item.position.y = item.userData.baseY + Math.sin(time * 3) * 0.5; // ลอยขึ้นลงเร็วๆ นิดหน่อย
+            });
+
+            // หมุน Background Grid หลอกตาให้ดูเหมือนเคลื่อนที่
+            gridHelper.position.z = (time * 2) % 10;
+
+            renderer.render(scene, camera);
+        }
+
+        // Handle Window Resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Start 3D rendering
+        window.onload = animate;
+
+    </script>
+</body>
+</html>
